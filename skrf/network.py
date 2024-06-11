@@ -537,7 +537,7 @@ class Network:
 
         # if they pass a number then use power operator
         if isinstance(other, Number):
-            out = self.copy()
+            out = self.copy(fast_copy=True)
             out.s = out.s ** other
             return out
 
@@ -623,7 +623,7 @@ class Network:
             #   e.g. A // (B)
             # then de-embed like B.inv * A
             b = other_tpl[0]
-            result = self.copy()
+            result = self.copy(fast_copy=True)
             result.s = (b.inv ** self).s
             # de_embed(self.s, b.s)
             return result
@@ -634,7 +634,7 @@ class Network:
             # then de-embed like B.inv * A * C.inv
             b = other_tpl[0]
             c = other_tpl[1]
-            result = self.copy()
+            result = self.copy(fast_copy=True)
             result.s = (b.inv ** self ** c.inv).s
             # flip(de_embed(flip(de_embed(c.s, self.s)), b.s))
             return result
@@ -649,7 +649,7 @@ class Network:
         """
         check_frequency_exist(self)
 
-        result = self.copy()
+        result = self.copy(fast_copy=True)
 
         if isinstance(other, Network):
             self.__compatable_for_scalar_operation_test(other)
@@ -669,7 +669,7 @@ class Network:
         ntw : :class:`Network`
         """
 
-        result = self.copy()
+        result = self.copy(fast_copy=True)
 
         if isinstance(other, Network):
             self.__compatable_for_scalar_operation_test(other)
@@ -688,7 +688,7 @@ class Network:
         -------
         ntw : :class:`Network`
         """
-        result = self.copy()
+        result = self.copy(fast_copy=True)
 
         if isinstance(other, Network):
             self.__compatable_for_scalar_operation_test(other)
@@ -707,7 +707,7 @@ class Network:
         -------
         ntw : :class:`Network`
         """
-        result = self.copy()
+        result = self.copy(fast_copy=True)
 
         if isinstance(other, Network):
             self.__compatable_for_scalar_operation_test(other)
@@ -722,7 +722,7 @@ class Network:
         """
         Element-wise complex subtraction of s-matrix.
         """
-        result = self.copy()
+        result = self.copy(fast_copy=True)
 
         if isinstance(other, Network):
             self.__compatable_for_scalar_operation_test(other)
@@ -741,7 +741,7 @@ class Network:
         -------
         ntw : :class:`Network`
         """
-        result = self.copy()
+        result = self.copy(fast_copy=True)
 
         if isinstance(other, Network):
             self.__compatable_for_scalar_operation_test(other)
@@ -763,7 +763,7 @@ class Network:
         -------
         ntw : :class:`Network`
         """
-        result = self.copy()
+        result = self.copy(fast_copy=True)
 
         if isinstance(other, Network):
             self.__compatable_for_scalar_operation_test(other)
@@ -863,7 +863,7 @@ class Network:
                         p2_index = self.port_names.index(p2_name)
                     except ValueError as err:
                         raise KeyError(f"Unknown port {p2_name}") from err
-                ntwk = self.copy()
+                ntwk = self.copy(fast_copy=True)
                 ntwk.s = self.s[:, p1_index, p2_index]
                 ntwk.z0 = self.z0[:, p1_index]
                 ntwk.name = f"{self.name}({p1_name}, {p2_name})"
@@ -932,7 +932,7 @@ class Network:
         if m:
             t0 = int(m.group(1)) - 1
             t1 = int(m.group(2)) - 1
-            ntwk = self.copy()
+            ntwk = self.copy(fast_copy=True)
             ntwk.s = self.s[:, t0, t1]
             ntwk.z0 = self.z0[:, t0]
             return ntwk
@@ -2001,12 +2001,18 @@ class Network:
         return True
 
     ## CLASS METHODS
-    def copy(self) -> Network:
+    def copy(self, fast_copy: bool = False) -> Network:
         """
         Return a copy of this Network.
 
         Needed to allow pass-by-value for a Network instead of
         pass-by-reference
+
+        Parameters
+        ----------
+        fast_copy : bool, optional
+            If True, s-parameters and z0 are not copied, but only basic parameters.
+            This is useful for networks that will update s-parameters later. The default is False.
 
         Returns
         -------
@@ -2014,9 +2020,11 @@ class Network:
             Copy of the Network
 
         """
-        ntwk = Network(s=self.s,
-                       frequency=self.frequency,
-                       z0=self.z0, s_def=self.s_def,
+        s = self.s[0, :, :] if fast_copy else self.s
+        z0 = self.z0[0] if fast_copy else self.z0
+
+        ntwk = Network(s=s, frequency=self.frequency,
+                       z0=z0, s_def=self.s_def,
                        comments=self.comments
                        )
 
@@ -2791,7 +2799,7 @@ class Network:
         # make new network and fill with interpolated values
         if f_kwargs is None:
             f_kwargs = {}
-        result = self.copy()
+        result = self.copy(fast_copy=True)
 
         if kwargs.get('kind', None) == 'rational':
             f_interp = mf.rational_interp
@@ -4832,25 +4840,28 @@ def connect(ntwkA: Network, k: int, ntwkB: Network, l: int, num: int = 1) -> Net
         s_def = 'traveling'
 
     # create output Network, from copy of input
-    ntwkC = ntwkA.copy()
+    fast_copy = True
+    ntwkC = ntwkA.copy(fast_copy=fast_copy)
 
     # if networks' z0's are not identical, then connect a impedance
     # mismatch, which takes into account the effect of differing port
     # impedances.
     # import pdb;pdb.set_trace()
     if not assert_z0_at_ports_equal(ntwkA, k, ntwkB, l):
+        fast_copy = False
         ntwkC.s = connect_s(
             ntwkA.s, k,
             impedance_mismatch(ntwkA.z0[:, k], ntwkB.z0[:, l], s_def), 0)
+        ntwkC.z0 = ntwkA.z0[:]
         # the connect_s() put the mismatch's output port at the end of
         #   ntwkC's ports.  Fix the new port's impedance, then insert it
         #   at position k where it belongs.
-        ntwkC.z0[:, k:] = np.hstack((ntwkC.z0[:, k + 1:], ntwkB.z0[:, [l]]))
+        ntwkC.z0[:, k:] = np.hstack((ntwkA.z0[:, k + 1:], ntwkB.z0[:, [l]]))
         ntwkC.renumber(from_ports=[ntwkC.nports - 1] + list(range(k, ntwkC.nports - 1)),
                        to_ports=list(range(k, ntwkC.nports)))
 
     # call s-matrix connection function
-    ntwkC.s = connect_s(ntwkC.s, k, ntwkB.s, l)
+    ntwkC.s = connect_s((ntwkA if fast_copy else ntwkC).s, k, ntwkB.s, l)
 
     # combine z0 arrays and remove ports which were `connected`
     ntwkC.z0 = np.hstack(
@@ -5016,7 +5027,8 @@ def innerconnect(ntwkA: Network, k: int, l: int, num: int = 1) -> Network:
         raise IndexError('Port `l` out of range')
 
     # create output Network, from copy of input
-    ntwkC = ntwkA.copy()
+    fast_copy = True
+    ntwkC = ntwkA.copy(fast_copy=fast_copy)
 
     s_def_original = ntwkC.s_def
 
@@ -5024,23 +5036,24 @@ def innerconnect(ntwkA: Network, k: int, l: int, num: int = 1) -> Network:
     if ntwkC.s_def == 'power':
         ntwkC.renormalize(ntwkC.z0, 'pseudo')
 
-    if not (ntwkC.z0[:, k] == ntwkC.z0[:, l]).all():
+    if not (ntwkA.z0[:, k] == ntwkA.z0[:, l]).all():
+        fast_copy = False
         # connect a impedance mismatch, which will takes into account the
         # effect of differing port impedances
-        mismatch = impedance_mismatch(ntwkC.z0[:, k], ntwkC.z0[:, l], ntwkC.s_def)
-        ntwkC.s = connect_s(ntwkC.s, k, mismatch, 0)
+        mismatch = impedance_mismatch(ntwkA.z0[:, k], ntwkA.z0[:, l], ntwkA.s_def)
+        ntwkC.s = connect_s(ntwkA.s, k, mismatch, 0)
         # the connect_s() put the mismatch's output port at the end of
         #   ntwkC's ports.  Fix the new port's impedance, then insert it
         #   at position k where it belongs.
-        ntwkC.z0[:, k:] = np.hstack((ntwkC.z0[:, k + 1:], ntwkC.z0[:, [l]]))
+        ntwkC.z0[:, k:] = np.hstack((ntwkA.z0[:, k + 1:], ntwkA.z0[:, [l]]))
         ntwkC.renumber(from_ports=[ntwkC.nports - 1] + list(range(k, ntwkC.nports - 1)),
                        to_ports=list(range(k, ntwkC.nports)))
 
     # call s-matrix connection function
-    ntwkC.s = innerconnect_s(ntwkC.s, k, l)
+    ntwkC.s = innerconnect_s((ntwkA if fast_copy else ntwkC).s  , k, l)
 
     # update the characteristic impedance matrix
-    ntwkC.z0 = np.delete(ntwkC.z0, list(range(k, k + 1)) + list(range(l, l + 1)), 1)
+    ntwkC.z0 = np.delete((ntwkA if fast_copy else ntwkC).z0, list(range(k, k + 1)) + list(range(l, l + 1)), 1)
 
     # recur if we're connecting more than one port
     if num > 1:
@@ -5350,7 +5363,7 @@ def concat_ports(ntwk_list: Sequence[Network], port_order: str = 'second',
     C[:, :nA, :nA] = A.copy()
     C[:, nA:, nA:] = B.copy()
 
-    ntwkC = ntwkA.copy()
+    ntwkC = ntwkA.copy(fast_copy=True)
     ntwkC.s = C
     ntwkC.z0 = np.hstack([ntwkA.z0, ntwkB.z0])
     if port_order == 'second':
@@ -5448,7 +5461,7 @@ def one_port_2_two_port(ntwk: Network) -> Network:
     ntwk : :class:`Network`
         the resultant two-port Network
     """
-    result = ntwk.copy()
+    result = ntwk.copy(fast_copy=True)
     result.s = np.zeros((result.frequency.npoints, 2, 2), dtype=complex)
     s11 = ntwk.s[:, 0, 0]
     result.s[:, 0, 0] = s11
@@ -7446,7 +7459,7 @@ def fix_z0_shape(z0: NumberLike, nfreqs: int, nports: int) -> np.ndarray:
         return np.array(nports * [z0]).T
 
     else:
-        raise IndexError('z0 is not an acceptable shape')
+        raise IndexError(f'z0 is not an acceptable shape {np.shape(z0)}')
 
 
 ## cascading assistance functions
@@ -7700,7 +7713,7 @@ def two_port_reflect(ntwk1: Network, ntwk2: Network = None, name : str | None = 
     >>> short,open = rf.Network('short.s1p', rf.Network('open.s1p')
     >>> rf.two_port_reflect(short,open)
     """
-    result = ntwk1.copy()
+    result = ntwk1.copy(fast_copy=True)
     if ntwk2 is None:
         ntwk2 = ntwk1
     s11 = ntwk1.s[:, 0, 0]
