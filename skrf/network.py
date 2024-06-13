@@ -539,6 +539,7 @@ class Network:
         if isinstance(other, Number):
             out = self.copy(fast_copy=True)
             out.s = out.s ** other
+            out.z0 = self.z0[:]
             return out
 
         else:
@@ -625,6 +626,7 @@ class Network:
             b = other_tpl[0]
             result = self.copy(fast_copy=True)
             result.s = (b.inv ** self).s
+            result.z0 = self.z0[:]
             # de_embed(self.s, b.s)
             return result
         else:
@@ -636,6 +638,7 @@ class Network:
             c = other_tpl[1]
             result = self.copy(fast_copy=True)
             result.s = (b.inv ** self ** c.inv).s
+            result.z0 = self.z0[:]
             # flip(de_embed(flip(de_embed(c.s, self.s)), b.s))
             return result
 
@@ -5138,6 +5141,8 @@ def innerconnect(ntwkA: Network, k: int, l: int, num: int = 1) -> Network:
 
     # 'power' is not supported, convert to supported definition and back afterwards
     if ntwkC.s_def == 'power':
+        ntwkC.s = ntwkA.s[:]
+        ntwkC.z0 = ntwkA.z0[:]
         ntwkC.renormalize(ntwkC.z0, 'pseudo')
 
     if not (ntwkA.z0[:, k] == ntwkA.z0[:, l]).all():
