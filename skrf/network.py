@@ -5949,13 +5949,13 @@ def connect_s(A: np.ndarray, k: int, B: np.ndarray, l: int, num: int = 1) -> np.
         C[:, :k, k + nB :] = A[:, :k, k:]
         C[:, k + nB :, :k] = A[:, k:, :k]
         C[:, k + nB :, k + nB :] = A[:, k:, k:]
-        C[:, k : k + nB, k : k + nB] = B.copy()
+        C[:, k : k + nB, k : k + nB] = B
 
         # call innerconnect_s() on composit matrix C
         return innerconnect_s(C, k + nB, k + l)
     else:
-        C[:, :nA, :nA] = A.copy()
-        C[:, nA:, nA:] = B.copy()
+        C[:, :nA, :nA] = A
+        C[:, nA:, nA:] = B
 
         # call innerconnect_s() on composit matrix C
         return innerconnect_s(C, k, nA + l)
@@ -6043,13 +6043,12 @@ def innerconnect_s(A: np.ndarray, k: int, l: int) -> np.ndarray:
 
     # create temporary matrices for calculation
     det = (Akl * Alk - Akk * All)
-    tmp_a = (Ael * Alk + Aek * All) / det
-    tmp_b = (Ael * Akk + Aek * Akl) / det
+    tmp_a = Ael * (Alk / det) + Aek * (All / det)
+    tmp_b = Ael * (Akk / det) + Aek * (Akl / det)
 
     # loop through ports and calculates resultant s-parameters
     for i in range(nA - 2):
-        for j in range(nA - 2):
-            C[:, i, j] += Ake[j] * tmp_a[i] + Ale[j] * tmp_b[i]
+        C[:, i, :] += (Ake * tmp_a[i] + Ale * tmp_b[i]).T
 
     return C
 
