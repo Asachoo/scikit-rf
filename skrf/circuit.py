@@ -101,7 +101,7 @@ from typing_extensions import NotRequired, Unpack
 
 from .constants import S_DEF_DEFAULT, MemoryLayoutT, NumberLike
 from .media import media
-from .network import Network, connect, innerconnect, s2s
+from .network import Network, connect, innerconnect, parallelconnect, s2s
 from .util import subplots
 
 if TYPE_CHECKING:
@@ -145,7 +145,6 @@ class Circuit:
     class _REDUCE_OPTIONS(TypedDict):
         check_duplication: NotRequired[bool]
         split_ground: NotRequired[bool]
-        split_multi: NotRequired[bool]
         max_nports: NotRequired[int]
         dynamic_networks: NotRequired[Sequence[Network]]
 
@@ -1786,7 +1785,6 @@ class Circuit:
 def reduce_circuit(connections: list[list[tuple[Network, int]]],
                    check_duplication: bool = True,
                    split_ground: bool = True,
-                   split_multi: bool = False,
                    max_nports: int = 20,
                    dynamic_networks: Sequence[Network] = tuple()) -> list[list[tuple[Network, int]]]:
     """
@@ -1803,11 +1801,6 @@ def reduce_circuit(connections: list[list[tuple[Network, int]]],
             If True, check if the connections have duplicate names. Default is True.
     split_ground : bool, optional.
             If True, split the global ground connection to independant ground connections. Default is True.
-    split_multi : bool, optional.
-            If True, use a splitter to handle connections involving more than two components. This approach
-            increases the computational load for individual computations. However, it proves advantageous for
-            batch processing by enabling a more comprehensive reduction of circuits, leading to more efficiency
-            in batch computations. Default is False.
     max_nports : int, optional.
             The maximum number of ports of a Network that can be reduced in circuit. If a Network in the
             circuit has a number of ports (nports), using the Network.connect() method to reduce the circuit's
@@ -1839,16 +1832,13 @@ def reduce_circuit(connections: list[list[tuple[Network, int]]],
     ignore_ntwk_names: set[str] = set(ntw.name for ntw in dynamic_networks)
 
     def invalide_to_reduce(cnx: list[tuple[Network, int]]) -> bool:
-        return (
-            any(
-                (
-                    Circuit._is_port(ntwk)
-                    or ntwk.nports > max_nports
-                    or ntwk.name in ignore_ntwk_names
-                )
-                for ntwk, _ in cnx
+        return any(
+            (
+                Circuit._is_port(ntwk)
+                or ntwk.nports > max_nports
+                or ntwk.name in ignore_ntwk_names
             )
-            or len(cnx) != 2
+            for ntwk, _ in cnx
         )
 
     if split_ground:
@@ -1856,8 +1846,8 @@ def reduce_circuit(connections: list[list[tuple[Network, int]]],
         for cnx in connections:
             ground_ntwk = next((ntwk for ntwk, _ in cnx if Circuit._is_ground(ntwk)), None)
 
-            # If there is no ground network or if the connection has exactly 2 elements, append it as is
-            if not ground_ntwk or len(cnx) == 2:
+            # If there is no ground networks, append it as is
+            if not ground_ntwk:
                 tmp_cnxs.append(cnx)
                 continue
 
@@ -1872,29 +1862,6 @@ def reduce_circuit(connections: list[list[tuple[Network, int]]],
 
         connections = tmp_cnxs
 
-    if split_multi:
-        tmp_cnxs = []
-
-        for cnx in connections:
-            # Check if the connection has more than 2 components
-            if len(cnx) <= 2:
-                tmp_cnxs.append(cnx)
-                continue
-
-            # Create a splitter for the connection
-            _media = media.DefinedGammaZ0(cnx[0][0].frequency)
-            splitter = _media.splitter(
-                name=f"Splt_{'&'.join(ntwk.name for ntwk, _ in cnx)}",
-                nports=len(cnx),
-                z0=np.array([ntwk.z0[:, p] for ntwk, p in cnx]).T
-            )
-
-            # Connect the splitter to the connection
-            for (idx, (ntwk, port)) in enumerate(cnx):
-                tmp_cnxs.append([(splitter, idx), (ntwk, port)])
-
-        connections = tmp_cnxs
-
     # Cache the connections that have been processed to avoid loop
     processed_network_names: set[str] = set()
 
@@ -1906,11 +1873,11 @@ def reduce_circuit(connections: list[list[tuple[Network, int]]],
         name_list = sorted(ntwk.name for ntwk, _ in cnx)
         ntwks_str: str = ''.join(name_list)
 
-        unique_networks = len(set(name_list))
-        total_ports = sum(ntwk.nports for ntwk, _ in cnx) - 2
-
-        # Return the number of ports if the connections performed
-        ports = total_ports if unique_networks == 2 else total_ports // 2 - 1
+        ports, cnx_ntwks_set = -len(cnx), set()
+        for ntwk, _ in cnx:
+            if ntwk.name not in cnx_ntwks_set:
+                ports += ntwk.nports
+                cnx_ntwks_set.add(ntwk.name)
 
         # If tuples of Networks in 'connections' have the same Networks, they form a loop.
         # Prioritize processing loops in the circuit by reducing the number of ports by 1.
@@ -1949,19 +1916,28 @@ def reduce_circuit(connections: list[list[tuple[Network, int]]],
         return connections
 
     # Connect the connections that need to be reduced
-    (ntwkA, k), (ntwkB, l) = cnx_to_reduce
-    ntwks_name = (ntwkA.name, ntwkB.name)
+    ntwks_name = tuple(str(ntwk.name) for ntwk, _ in cnx_to_reduce)
 
     # Get the Networks' names
-    name_cnt, name_a, name_b = "", str(ntwkA.name), str(ntwkB.name)
+    name_cnt = ""
 
     # Generate the connected network and the original port index
-    if ntwkA.name == ntwkB.name:
-        ntwk_cnt = innerconnect(ntwkA=ntwkA, k=k, l=l)
-        name_cnt = f"<{name_a}>"
+    if len(ntwks_name) == 2:
+        (ntwkA, k), (ntwkB, l) = cnx_to_reduce
+        if len(set(ntwks_name)) == 1:
+            ntwk_cnt = innerconnect(ntwkA=cnx_to_reduce[0][0], k=k, l=l)
+            name_cnt = f"<{ntwkA.name}>"
+        else:
+            ntwk_cnt = connect(ntwkA=ntwkA, k=k, ntwkB=ntwkB, l=l)
+            name_cnt = f"({ntwkA.name}**{ntwkB.name})"
     else:
-        ntwk_cnt = connect(ntwkA=ntwkA, k=k, ntwkB=ntwkB, l=l)
-        name_cnt = f"({name_a}**{name_b})"
+        ntwks, indexes = [], []
+        for ntwk, port in cnx_to_reduce:
+            ntwks.append(ntwk)
+            indexes.append(port)
+
+        ntwk_cnt = parallelconnect(ntwks=ntwks, ports=indexes)
+        name_cnt = f"({'**'.join(ntwks_name)})"
 
     # Update the name of the connected network
     ntwk_cnt.name = name_cnt
@@ -1969,24 +1945,37 @@ def reduce_circuit(connections: list[list[tuple[Network, int]]],
     # Generate the port index, the index is the original port index
     # and the value is the new port index, -1 means the port is removed.
     port_idx = tuple()
-    if ntwkA.name == ntwkB.name:
-        port_cnt = list(range(ntwk_cnt.nports))
-        port_cnt.insert(min(k, l), -1)
-        port_cnt.insert(max(k, l), -1)
-        port_idx = (tuple(port_cnt), tuple(port_cnt))
-    elif ntwkB.nports == 2 and ntwkA.nports > 2:
-        # if ntwkB is a 2port, then keep port indices where you expect.
-        port_idx = (
-            tuple([(i if i != k else -1) for i in range(ntwkA.nports)]),
-            ((-1, k) if l == 0 else (k, -1)),
-        )
-    else:
-        portA = list(range(ntwkA.nports - 1))
-        portA.insert(k, -1)
-        portB = [i + ntwkA.nports - 1 for i in range(ntwkB.nports - 1)]
-        portB.insert(l, -1)
+    if len(ntwks_name) == 2:
+        (ntwkA, k), (ntwkB, l) = cnx_to_reduce
+        if ntwkA.name == ntwkB.name:
+            port_cnt = list(range(ntwk_cnt.nports))
+            port_cnt.insert(min(k, l), -1)
+            port_cnt.insert(max(k, l), -1)
+            port_idx = (tuple(port_cnt), tuple(port_cnt))
+        elif ntwkB.nports == 2 and ntwkA.nports > 2:
+            # if ntwkB is a 2port, then keep port indices where you expect.
+            port_idx = (
+                tuple([(i if i != k else -1) for i in range(ntwkA.nports)]),
+                ((-1, k) if l == 0 else (k, -1)),
+            )
+        else:
+            portA = list(range(ntwkA.nports - 1))
+            portA.insert(k, -1)
+            portB = [i + ntwkA.nports - 1 for i in range(ntwkB.nports - 1)]
+            portB.insert(l, -1)
 
-        port_idx = (tuple(portA), tuple(portB))
+            port_idx = (tuple(portA), tuple(portB))
+    else:
+        offset = 0
+        port_idx_list = []
+        for ntwk, port in cnx_to_reduce:
+
+            port_tmp = [i + offset for i in range(ntwk.nports - 1)]
+            port_tmp.insert(port, -1)
+            port_idx_list.append(port_tmp)
+
+            offset += ntwk.nports - 1
+        port_idx = tuple(port_idx_list)
 
     # Perform the reduction to get the reduced circuit connections
     # Skip the connection that connected and replace the network and port index
@@ -2017,7 +2006,6 @@ def reduce_circuit(connections: list[list[tuple[Network, int]]],
         connections=reduced_cnxs,
         check_duplication=False,
         split_ground=False,
-        split_multi=False,
         max_nports=max_nports,
         dynamic_networks=dynamic_networks,
     )
