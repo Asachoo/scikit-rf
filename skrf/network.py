@@ -2004,12 +2004,10 @@ class Network:
         except ValueError:
             return False
 
-        I = np.identity(M.shape[-1])
-        for f_idx in range(len(M)):
-            D = I - M[f_idx, :, :]  # dissipation matrix
-            if not mf.is_positive_definite(D) \
-                    and not mf.is_positive_semidefinite(mat=D, tol=tol):
-                return False
+        D = np.identity(M.shape[-1]) - M
+        if not mf.is_positive_definite(D) \
+                and not mf.is_positive_semidefinite(mat=D, tol=tol):
+            return False
         return True
 
     def is_lossless(self, tol: float = mf.ALMOST_ZERO) -> bool:

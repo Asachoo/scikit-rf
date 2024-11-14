@@ -1178,7 +1178,7 @@ def get_Hermitian_transpose(mat: np.ndarray) -> np.ndarray:
     mat : np.ndarray
 
     """
-    return mat.transpose().conjugate()
+    return mat.transpose((0,2,1)).conjugate()
 
 
 def is_Hermitian(mat: np.ndarray, tol: float = ALMOST_ZERO) -> bool:
