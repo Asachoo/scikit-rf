@@ -2034,10 +2034,8 @@ class Network:
         ----------
         https://en.wikipedia.org/wiki/Unitary_matrix
         """
-        for f_idx in range(len(self.s)):
-            mat = self.s[f_idx, :, :]
-            if not mf.is_unitary(mat, tol=tol):
-                return False
+        if not mf.is_unitary(self.s, tol=tol):
+            return False
         return True
 
     ## CLASS METHODS
