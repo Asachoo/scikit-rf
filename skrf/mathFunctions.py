@@ -1109,7 +1109,9 @@ def is_square(mat: np.ndarray) -> bool:
     is_unitary
     is_symmetric
     """
-    return mat.shape[0] == mat.shape[1]
+    if mat.ndim not in {2, 3}:
+        return False
+    return mat.shape[-2] == mat.shape[-1]
 
 
 def is_unitary(mat: np.ndarray, tol: float = ALMOST_ZERO) -> bool:
@@ -1135,8 +1137,7 @@ def is_unitary(mat: np.ndarray, tol: float = ALMOST_ZERO) -> bool:
     """
     if not is_square(mat):
         return False
-    I = np.zeros_like(mat)
-    I += np.identity(mat.shape[-1])
+    I = np.zeros_like(mat) + np.identity(mat.shape[-1])
     return np.allclose(get_Hermitian_transpose(mat) @ mat, I, atol=tol)
 
 
