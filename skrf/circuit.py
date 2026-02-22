@@ -1290,7 +1290,23 @@ class Circuit:
     @property
     def s_external(self) -> np.ndarray:
         """
-        Return the scattering parameters for the external ports.
+        Return the scattering parameters for the external ports using Schur complement.
+
+        This is an alternative implementation to :func:`s_external` that uses
+        the Schur complement directly on the matrix ([X]^-1 - [C]) to compute
+        the external port S-parameters.
+
+        The global S-matrix is defined as:
+            [S] = ([X]^-1 - [C])^-1
+
+        Using the Schur complement, the external S-parameters can be computed as:
+            S_ext = (M_ee - M_ei @ M_ii^-1 @ M_ie)^-1
+
+        where M = ([X]^-1 - [C]) and the subscripts denote:
+            - ee: external to external
+            - ei: external to internal
+            - ie: internal to external
+            - ii: internal to internal
 
         Returns
         -------
@@ -1298,58 +1314,53 @@ class Circuit:
             Scattering parameters of the circuit for the external ports.
             Shape `f x nb_ports x nb_ports`
         """
-        # The external S-matrix is the submatrix corresponding to external ports:
-        # port_indexes = self.port_indexes
-        # a, b = np.meshgrid(port_indexes, port_indexes, indexing='ij')
-        # S_ext = self.s[:, a, b]
-
-        # Instead of calculating all S-parameters and taking a submatrix,
-        # the following faster approach only calculates external the S-parameters
-        # from block-matrix operations.
-        # generate index lists of internal and external ports
+        # Get the port indexes (external ports)
         port_indexes = self.port_indexes
-        in_idxs = [(i,) for i in range(self.dim) if i not in port_indexes]
-        ext_idxs = [(i,) for i in port_indexes]
-        ext_l, in_l = len(ext_idxs), len(in_idxs)
 
-        # generate index slices for each sub-matrices
-        idx_a, idx_b, idx_c, idx_d = (
-            np.repeat(i, l, axis=1)
-            for i, l in (
-                (ext_idxs, ext_l),
-                (ext_idxs, in_l),
-                (in_idxs, ext_l),
-                (in_idxs, in_l),
-            )
-        )
+        # Compute M = [X]^-1 - [C]
+        # Using the _X method with inverse=True to get [X]^-1
+        M = self._X(inverse=True) - self.C  # shape (nfreq, dim, dim)
 
-        # sub-matrices index, Matrix = [[A, B], [C, D]]]
-        A_idx = (slice(None), idx_a, idx_a.T)
-        B_idx = (slice(None), idx_b, idx_c.T)
-        C_idx = (slice(None), idx_c, idx_b.T)
-        D_idx = (slice(None), idx_d, idx_d.T)
+        # Create index arrays for internal and external ports
+        ext_idx = np.array(port_indexes)
+        int_idx = np.array([i for i in range(self.dim) if i not in port_indexes])
 
-        # Get the buffer of global matrix in f-order [X_T] and intermediate temporary matrix [T]
-        # [T] = - [C] @ [X]
-        x, t = self.X_F, np.array(self.T)
-        np.einsum('...ii->...i', t)[:] += 1
+        # Extract sub-matrices using broadcasting
+        M_ee = M[:, ext_idx[:, None], ext_idx]
+        M_ei = M[:, ext_idx[:, None], int_idx]
+        M_ie = M[:, int_idx[:, None], ext_idx]
+        M_ii = M[:, int_idx[:, None], int_idx]
 
-        # Get the sub-matrices of inverse of intermediate temporary matrix t
-        # The method np.linalg.solve(A, B) is equivalent to np.inv(A) @ B, but more efficient
+        # Compute S_ext using Schur complement:
+        # S_ext = (M_ee - M_ei @ M_ii^-1 @ M_ie)^-1
+        # Use vectorized solve: M_ii @ X = M_ie -> solve for all frequencies at once
+        # np.linalg.solve handles batched inputs: (nfreq, n, n) @ (nfreq, n, k) -> (nfreq, n, k)
         try:
-            tmp_mat = np.linalg.solve(t[D_idx], t[C_idx])
+            X = np.linalg.solve(M_ii, M_ie)
         except np.linalg.LinAlgError:
-            warnings.warn('Singular matrix detected, using numpy.linalg.lstsq instead.', RuntimeWarning, stacklevel=2)
-            # numpy.linalg.lstsq only works for 2D arrays, so we need to loop over frequencies
-            tmp_mat = np.zeros((self.frequency.npoints, len(in_idxs), len(ext_idxs)), dtype='complex')
-            for i in range(self.frequency.npoints):
-                tmp_mat[i, :, :] = np.linalg.lstsq(t[i, D_idx[1], D_idx[2]], t[i, C_idx[1], C_idx[2]], rcond=None)[0]
+            warnings.warn('Singular matrix detected in M_ii, using lstsq instead.',
+                          RuntimeWarning, stacklevel=2)
+            # Fall back to per-frequency computation
+            X = np.zeros_like(M_ie)
+            for i in range(len(self.frequency)):
+                X[i] = np.linalg.lstsq(M_ii[i], M_ie[i], rcond=None)[0]
 
-        # Get the external S-parameters for the external ports
-        # Calculated by multiplying the sub-matrices of x and t
-        S_ext = (x[A_idx] - x[B_idx] @ tmp_mat) @ np.linalg.inv(
-            t[A_idx] - t[B_idx] @ tmp_mat
-        )
+        # Compute Schur complement: M_ee - M_ei @ X
+        schur_comp = M_ee - np.einsum('fij,fjk->fik', M_ei, X)
+
+        # Invert Schur complement to get S_ext
+        # For batched matrix inversion, use solve with identity matrix:
+        # A^-1 = solve(A, I)
+        n_ext = schur_comp.shape[1]
+        try:
+            S_ext = np.linalg.solve(schur_comp, np.eye(n_ext))
+        except np.linalg.LinAlgError:
+            warnings.warn('Singular matrix detected in Schur complement, using lstsq instead.',
+                          RuntimeWarning, stacklevel=2)
+            # Fall back to per-frequency computation
+            S_ext = np.zeros_like(M_ee)
+            for i in range(len(self.frequency)):
+                S_ext[i] = np.linalg.lstsq(schur_comp[i], np.eye(n_ext), rcond=None)[0]
 
         S_ext = s2s(S_ext, self.port_z0, S_DEF_DEFAULT, 'traveling')
         return S_ext  # shape (nb_frequency, nb_ports, nb_ports)

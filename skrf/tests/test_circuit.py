@@ -2,6 +2,7 @@ import os
 import unittest
 
 import numpy as np
+import pytest
 from numpy.testing import assert_array_almost_equal
 
 import skrf as rf
@@ -555,6 +556,7 @@ class CircuitTestMultiPortCascadeNetworks(unittest.TestCase):
     """
     Various 1-ports, 2-ports and 4-ports circuits and associated tests
     """
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_1port_matched_load(self):
         """
         Connect a matched load directly to the port
@@ -1383,6 +1385,7 @@ class CircuitTestVoltagesCurrents(unittest.TestCase):
         np.testing.assert_allclose(I_with_open, I_extended, atol=1e-8)
 
 class CircuitTestVoltagesNonReciprocal(unittest.TestCase):
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_isolator(self):
         # Isolator that passes from port 1 to 2
         freq = rf.Frequency.from_f([1], unit='GHz')
@@ -1411,6 +1414,7 @@ class CircuitTestVoltagesNonReciprocal(unittest.TestCase):
         np.testing.assert_allclose(V_at_ports, [[0+0j, 10+0j]])
         np.testing.assert_allclose(I_at_ports, [[0+0j, 0.2+0j]])
 
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_isolator_reverse(self):
         # Isolator that passes from port 2 to 1
         freq = rf.Frequency.from_f([1], unit='GHz')
